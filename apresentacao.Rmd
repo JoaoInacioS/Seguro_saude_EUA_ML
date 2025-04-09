@@ -1,0 +1,363 @@
+---
+title: "Modelo de Regressão Lasso para os custos pessoais em Seguro de Saúde nos Estados Unidos"
+author: "Caroline Cogo, João Inácio Scrimini, Joelmir Junior, Renata Stone"
+date: "`r format(Sys.time(), '%B %Y')`"
+header-includes:
+   - \usepackage[brazil]{babel}
+   - \usepackage{bm}
+   - \usepackage{float}
+encoding: "UTF-8"
+output:
+  xaringan::moon_reader:
+    lib_dir: libs
+    nature:
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+editor_options:
+  chunk_output_type: console
+---
+class: center, middle
+
+```{r setup,include=F}
+library(tidymodels)
+library(tidyverse)
+library(ISLR)
+library(vip)
+library(skimr)
+
+
+ggplot2::theme_set(ggplot2::theme_minimal()) 
+knitr::opts_chunk$set(echo=F, message=F, warning=F, fig.pos = 'H', 
+                      fig.align = 'center', fig.width = 8, fig.height= 5)
+scale_fill_discrete = \(...) ggplot2::scale_fill_brewer(... , palette = "Set2") 
+source("funcoes.R")
+
+options(scipen=999) #desabilita result em notação científica 
+options(digits=3)
+options(OutDec=".")
+```
+
+```{r, include=FALSE}
+dados1<-readr::read_csv("insurance.csv")
+dados<- dados1 |>  
+  dplyr::rename(c(Idade = age, Genero = sex, IMC= bmi, Filhos = children, 
+                  IMC= bmi,Fumante = smoker, Regiao = region, 
+                  Encargos = charges )) |> 
+  mutate(
+    Genero=recode(
+      Genero, 
+      "female"="feminino", 
+      "male"="masculino"
+    ),
+    Fumante=recode(
+      Fumante,
+      "yes"="sim",
+      "no"="nao"
+    ),
+    Regiao=recode(
+      Regiao, 
+      "northeast"="nordeste",
+      "southeast"="sudeste",
+      "southwest"="sudoeste",
+      "northwest"="noroeste"
+    ))
+dados3 <- dados |>
+  mutate(Encargos=round(Encargos*0.001,3))
+dados4 <- dados3 |> 
+  mutate(faixa_etaria=case_when(
+    Idade >= 18 & Idade < 26 ~ "18 a 25 anos",
+    Idade >= 26 & Idade < 34 ~ "26 a 33 anos",
+    Idade >= 34 & Idade < 42 ~ "34 a 41 anos",
+    Idade >= 42 & Idade < 50 ~ "42 a 49 anos",
+    Idade >= 50 & Idade < 58 ~ "50 a 57 anos",
+    Idade >= 58 & Idade < 66 ~ "58 a 65 anos",
+    TRUE ~ "Outros"
+  ),
+  fIMC=case_when(
+    IMC < 18.5 ~ "abaixo",
+    IMC >= 18.5 & IMC <= 24.9  ~ "ideal",
+    IMC > 24.9 ~ "acima",
+    TRUE ~ "Outros"
+  ))
+
+```
+
+# Introdução
+
+
+As áreas financeiras e de seguro são recorrentes na aplicação de modelos estatísticos para a tomada de decisão em negócios. O [banco de dados](https://www.kaggle.com/datasets/mirichoi0218/insurance) utilizado em nosso estudo, segue esse contexto. O objetivo é aplicar um modelo de Machine Learning, através da regressão Lasso no contexto de encargos de seguro saúde. A fim de obter um modelo que consiga identificar as características presente nos dados, e tenha um bom desempenho.
+
+
+---
+class: center, middle
+
+O banco de dados possui `r nrow(dados)` observações e `r ncol(dados)` variáveis.
+
+```{r tab0, include=T}
+var = c('Idade', 'Gênero', 'IMC', 'Filhos', 'Fumante', 'Regiao', 'Encargos')
+
+desc = c('Idade do beneficiario principal','Genero do contratante do seguro, feminino ou masculino','Indice de massa corporal','Numero de filhos cobertos pelo seguro saude','Se fuma ou nao','A área residencial do beneficiário nos EUA, nordeste, sudeste, sudoeste, noroeste','Custos médicos individuais faturados pelo seguro de saúde')
+
+data.frame(Variável = var, Descrição = desc) |> 
+  fastrep::tbl("", format = "html")
+```
+
+---
+class: center, middle
+
+```{r tab1, include=TRUE, results='asis'}
+fastrep::tbl(fastrep::describe(dados),title = "Análise descritiva das variáveis.")
+```
+---
+class: center, middle
+
+```{r fig1, echo=FALSE,fig.align='center',fig.cap="Boxplot para Idade e IMC."}
+p1<-grafboxgen(d= dados3, v = "", v1 = Idade, cores = "Set1",leg = T,
+               legx = "x", legy = "Idade")
+
+p2<-grafboxgen(d= dados3, v = "", v1 = IMC, cores = "Set1",leg = T,
+               legx = "x", legy = "IMC")
+cowplot::plot_grid(p1,p2,ncol = 2)
+```
+
+---
+class: center, middle
+
+```{r fig2, echo=FALSE,fig.align='center',fig.cap="Boxplot para Filhos e Encargos (mil)."}
+p4<-grafboxgen(d= dados3, v = "", v1 = Encargos, cores = "Set1",leg = T,
+               legx = "x", legy = "Encargos (mil)")
+p3<-grafboxgen(d= dados3, v = "", v1 = Filhos, cores = "Set1",leg = T,
+               legx = "x", legy = "Filhos")
+cowplot::plot_grid(p3,p4,ncol = 2)
+```
+
+---
+class: center, middle
+
+```{r fig3, echo=FALSE,fig.align='center',fig.cap="Box plot IMC vs Faixa etária."}
+grafboxgen(d= dados4, v = IMC, v1 = faixa_etaria, cores = "Set1",leg = T,
+           legx = "IMC" , legy = "Faixa Etária")
+```
+
+---
+class: center, middle
+
+```{r fig4,echo=FALSE,fig.align='center',fig.cap="Box plot Fumante vs Encargos (mil)."}
+grafboxgen(d= dados4, v = Fumante , v1 = Encargos, cores = "Set1",leg = T,
+           legx = "Fumante" , legy = "Encargos (mil)")
+```
+
+---
+class: center, middle
+
+```{r fig5, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) por Faixa Etária."}
+grafbarmedia(d= dados4, v = faixa_etaria, v1 = Encargos, cores = "Spectral",
+             cnum = T, leg = F, legx = "Faixa Etária", legy = "Média de Encargos (Mil)")
+```
+
+---
+class: center, middle
+
+```{r fig6, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) por Gênero."}
+grafbarmedia(d= dados4, v = Genero, v1 = Encargos, cores = "Set1",cnum = T,
+             leg = F, legx = "Gênero", legy = "Média de Encargos (mil)")
+```
+
+---
+class: center, middle
+
+```{r fig7, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) pelo evento de ser Fumante ou não."}
+grafbarmedia(d= dados4, v = Fumante, v1 = Encargos, cores = "Set1",cnum = T,
+             leg = F, legx = "Fumante", legy = "Média de Encargos (mil)")
+```
+
+---
+class: center, middle
+
+```{r fig8, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) pela categoria do IMC."}
+
+dados4 |>
+    group_by( fIMC ) |>
+    summarise( "medy" = mean( Encargos )) |> 
+    ggplot(aes(x = fct_reorder(factor( fIMC ), medy,.desc = F), 
+              y = medy, fill = levels(factor( fIMC )))) +
+    geom_col(colour="black",show.legend = F) +
+    scale_fill_brewer(palette = "Set1", direction = 1) +
+    labs(
+      x = "IMC",
+      y = "Média de Encargos (mil)",
+      fill = "IMC" 
+    ) + 
+     theme_minimal() +
+      #Para aparecer os valores de cada coluna:
+    geom_text(aes(x = levels(factor( fIMC )), y = medy, 
+                     label = round(medy,2)),show.legend = F,vjust=1.75)
+
+```
+
+---
+class: center, middle
+
+```{r regi, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) pela Região."}
+grafbarmedia(d= dados4, v = Regiao, v1 = Encargos, cores = "Set1",cnum = T,
+             leg = F, legx = "Região", legy = "Média de Encargos (mil)")
+```
+
+---
+class: center, middle
+
+# Modelagem
+
+```{r,include=FALSE}
+dados$Genero<-as.factor(dados$Genero)
+dados$Fumante<-as.factor(dados$Fumante)
+dados$Regiao<-as.factor(dados$Regiao)
+glimpse(dados)
+```
+
+```{r,echo=TRUE}
+# Separando as bases de treino e teste ------------------------------------
+set.seed(12345)
+base_quebra <- rsample::initial_split(dados) 
+treino <- training(base_quebra)
+teste <- testing(base_quebra)
+```
+
+---
+class: center, middle
+
+
+```{r,echo=TRUE}
+# Especificando o modelo
+modelo <- linear_reg(
+  penalty = tune(),
+  mixture = 1 # LASSO
+)|>  
+  set_engine("glmnet")|>
+  set_mode("regression")
+
+# Cross-validation
+set.seed(12345)
+bases_Cross<- vfold_cv(treino, v = 5)
+```
+
+---
+class: center, middle
+
+```{r, echo=TRUE}
+# Escolhendo o valor do hiperparâmetro
+set.seed(12345)
+tunagem <- tune_grid(
+  modelo,
+  Encargos ~ .,
+  bases_Cross,
+  grid=300,
+  metrics= metric_set(rmse, rsq),
+  control = control_grid(verbose = TRUE, allow_par = FALSE))
+```
+
+---
+class: center, middle
+
+```{r tun,echo=F,fig.cap="Tunagem do modelo."}
+autoplot(tunagem)
+```
+
+```{r,eval=FALSE}
+show_best(tunagem,"rmse", n=1)
+```
+
+
+---
+class: center, middle
+
+```{r,include=T,echo=TRUE}
+# Especificando o modelo
+modelo_esp <- linear_reg(
+  penalty =  0,
+  mixture = 1 # LASSO
+)|>
+  set_engine("glmnet")|>
+  set_mode("regression")
+
+# Ajustando o modelo
+modelo_final_ajustado <- fit(modelo_esp,
+                             Encargos ~ .,
+                             data=treino)
+```
+
+---
+class: center, middle
+
+```{r import}
+fastrep::tbl(vip::vi(modelo_final_ajustado),title = "Importância das variáveis do modelo ajustado em relação a variável resposta Encargos.")
+```
+
+---
+class: center, middle
+
+```{r,include=FALSE}
+impor<-vip::vi(modelo_final_ajustado) |>
+  mutate(
+    abs_importance = abs(Importance),
+    Variable = fct_reorder(Variable, abs_importance)
+  )
+```
+
+```{r import1,fig.cap="Importância das variáveis do modelo ajustado em relação a variável resposta Encargos."}
+ggplot(impor) +
+  geom_col(aes(x = abs_importance, y = Variable, fill = Sign))+
+  scale_fill_brewer(palette = "Set1", direction = 1) +
+  labs(
+    x="Importância sobre Encargos",
+    y="Variáveis"
+  )+
+   theme_minimal()
+
+```
+
+---
+class: center, middle
+$$ Y =  -11718 + 23760 x_1 + 252 x_2 - 350 x_3 + 336 x_4 $$
+$$+ 338x_5 - 128x_6 - 804x_7 -499x_8 ,$$
+
+
+Y = Encargos, $x_1 =$ Fumante, $x_2$ = Idade, $x_3$ = Gênero Masculino, $x_4$ = IMC, $x_5$ = Filhos, $x_6$ = Região Noroeste, $x_7$ = Região Sudoeste, e $x_8$ = Região Sudoeste.
+
+
+```{r,include=FALSE}
+fastrep::tbl(broom::tidy(modelo_final_ajustado))
+###
+# USAR ESSE RESULTADO PARA MONTAR O MODELO ESCRITO.
+# Encargos = -11718 + 252 IDADE - 350 GeneroMasculino ...
+```
+
+---
+class: center, middle
+
+```{r predict,fig.cap="Previsão do modelo ajustado em relação ao banco de teste."}
+predicao_Encargos<- predict(object = modelo_final_ajustado,new_data = teste)
+
+dados_totais<-cbind(previsao=predicao_Encargos$.pred,dados=teste$Encargos,n=1:length(teste$Encargos))
+pivot<-pivot_longer(data = as.data.frame(dados_totais),cols = previsao:dados,names_to = "linha",values_to = "valor")
+ggplot(pivot) +
+  geom_line(aes(y = valor,x=n,color=linha),size = 0.4) +
+  scale_color_manual(
+    values = c(previsao = "#ED0F00",
+    dados = "#000000")
+    )+
+  labs(
+    y="Encargos",
+    x="Número de observações",
+    color="Modelo"
+  )+
+  theme_minimal()
+# Esse gráfico é para ver se o comportamento do modelo é similar aos dados
+# Aparentemente é bem parecido.
+```
+
+---
+class: center, middle
+
+# Obrigada!

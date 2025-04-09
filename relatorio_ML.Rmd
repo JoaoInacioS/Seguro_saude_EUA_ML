@@ -1,0 +1,373 @@
+---
+title: "Modelo de Regressão Lasso para os custos pessoais em Seguro de Saúde nos Estados Unidos"
+author:
+  - Caroline Cogo Carneosso
+  - João Inácio Scrimini
+  - Joelmir Junior
+  - Renata Stone
+header-includes:
+   - \usepackage[brazil]{babel}
+   - \usepackage{bm}
+   - \usepackage{float}
+geometry: left=1.7cm, right=1.7cm, top=3cm, bottom=3cm
+output:
+  bookdown::pdf_document2:
+editor_options:
+  chunk_output_type: console
+indent: true
+---
+
+
+```{r setup, include=F}
+library(tidymodels)
+library(tidyverse)
+library(ISLR)
+library(vip)
+library(skimr)
+options(digits = 3)  
+ggplot2::theme_set(ggplot2::theme_minimal()) 
+knitr::opts_chunk$set(echo=F, message=F, warning=F, fig.pos = 'H', 
+                      fig.align = 'center', fig.width = 6, fig.height= 3.4)
+scale_fill_discrete = \(...) ggplot2::scale_fill_brewer(... , palette = "Set2") 
+source("funcoes.R")
+
+```
+
+```{r}
+dados1<-readr::read_csv("insurance.csv")
+dados<- dados1 |>  
+  dplyr::rename(c(Idade = age, Genero = sex, IMC= bmi, Filhos = children, 
+                  IMC= bmi,Fumante = smoker, Regiao = region, 
+                  Encargos = charges )) |> 
+  mutate(
+    Genero=recode(
+      Genero, 
+      "female"="feminino", 
+      "male"="masculino"
+    ),
+    Fumante=recode(
+      Fumante,
+      "yes"="sim",
+      "no"="nao"
+    ),
+    Regiao=recode(
+      Regiao, 
+      "northeast"="nordeste",
+      "southeast"="sudeste",
+      "southwest"="sudoeste",
+      "northwest"="noroeste"
+    ))
+dados3 <- dados |>
+  mutate(Encargos=round(Encargos*0.001,3))
+dados4 <- dados3 |> 
+  mutate(faixa_etaria=case_when(
+    Idade >= 18 & Idade < 26 ~ "18 a 25 anos",
+    Idade >= 26 & Idade < 34 ~ "26 a 33 anos",
+    Idade >= 34 & Idade < 42 ~ "34 a 41 anos",
+    Idade >= 42 & Idade < 50 ~ "42 a 49 anos",
+    Idade >= 50 & Idade < 58 ~ "50 a 57 anos",
+    Idade >= 58 & Idade < 66 ~ "58 a 65 anos",
+    TRUE ~ "Outros"
+  ),
+  fIMC=case_when(
+    IMC < 18.5 ~ "abaixo",
+    IMC >= 18.5 & IMC <= 24.9  ~ "ideal",
+    IMC > 24.9 ~ "acima",
+    TRUE ~ "Outros"
+  ))
+```
+
+
+# Introdução
+
+As áreas financeiras e de seguro são recorrentes na aplicação de modelos estatísticos para a tomada de decisão em negócios. O [banco de dados](https://www.kaggle.com/datasets/mirichoi0218/insurance) utilizado em nosso estudo, seguindo esse contexto, o objetivo é fazer uma previsão de gastos com Seguro de Saúde privado nos Estados Unidos. O qual leva em consideração algumas variáveis, como, a idade do beneficiário, número de dependentes, o IMC que fornece uma compreensão do corpo, pesos relativamente altos ou baixos em relação à altura, índice objetivo de peso corporal (kg / m$^{2}$) usando a relação altura/peso, idealmente 18.5 a 24.9, dentre outras.
+
+O banco de dados possui `r nrow(dados)` observações e `r ncol(dados)` variáveis, que estão descritas na Tabela \ref{tab:tab0}.
+
+\begin{table}[H]
+\caption{Descrição da váriaveis}\label{tab:tab0}
+\centering
+\begin{tabular}[t]{l|l}
+\hline
+Variável & Descrição\\
+\hline
+Idade & Idade do beneficiário principal.\\
+\hline
+Genero & Gênero do contratante do seguro, feminino ou masculino.\\
+\hline
+IMC & Índice de massa corporal. \\
+\hline
+Filhos & Número de filhos cobertos pelo seguro saúde / Número de dependentes.\\
+\hline
+Fumante & Se fuma ou não. \\
+\hline
+Regiao & A área residencial do beneficiário nos EUA, nordeste, sudeste, sudoeste, noroeste.\\
+\hline
+Encargos & Custos médicos individuais faturados pelo seguro de saúde.\\
+\hline
+\end{tabular}
+\end{table}
+
+O presente trabalho tem como objetivo aplicar um modelo de Machine Learning, através da regressão Lasso no contexto de encargos de seguro saúde. A fim de obter um modelo que consiga identificar as características presente nos dados, e tenha um bom desempenho. Para isso, inicialmente, será realizado o tratamento dos dados e uma análise exploratória, a fim de entender seu comportamento. Na parte da modelagem o banco de dados é dividido em treino e teste, será realizada a validação cruzada e a identificação do hiperparâmetro.
+
+
+# Análise exploratória
+
+Nesta seção, analisaremos as variáveis presentes no estudo, buscando pré identificar o comportamentos dos dados e associações relevantes. Na qual optamos por modificar a variável resposta Encargos dividido-a em mil, assim facilitando a apresentação dos resultados e visualização gráfica. As análises foram feitas por meio de tabelas descritivas, gráficos de colunas e boxplots.
+Na Tabela \ref{tab:tab1} é apresentado a análise descritiva para as variáveis quantitativas em estudo. Inicialmente, observamos que não é apresentado valores faltantes nos dados. A Idade mínima no banco de dados foi de 18 anos e a máxima de 64 anos, com média de aproximadamente 39 anos. No IMC, com base no índice ideal de 18.5 até 24.9, é notado que a média entre dos indivíduos presentes no banco de dados foi de 30.66, maior que o ideal. Assim, concluimos que a maioria das pessoas estão acima do IMC ideal, possivelmente apresentando algum nível de obesidade, chegando em alguns casos em IMC de 53.1, valor muito elevado, mais que o dobro do máximo ideal. Observamos também que existem alguns caso com valores de IMC inferiores a 18.5, e em alguns casos com um valor de 16. O máximo de filhos entre os beneficiários foi de 5, e a média de filhos é de 1 por pessoa/família. Para os Encargos médicos mínimo de gastos de 1122 e máximo de 63770.4, com média de 13270.42, pelo valor da média em relação ao máximo, já podemos esperar que existam \textit{outliers}, devido à grande diferença.
+
+
+```{r tab1}
+fastrep::tbl(fastrep::describe(dados),title = "Análise descritiva das variáveis quantitativas em estudo.")
+```
+
+Pelas Figuras \ref{fig:fig1} e \ref{fig:fig2} são apresentados os gráficos de boxplots para as variáveis quantitativas em estudo, mencionadas na Tabela \ref{tab:tab1}, e separadas por gênero. Nesses gráficos a Idade e quantidade de Filhos exibiram pouca diferença entre feminino e masculino. Para o IMC, podemos visualizar que a média em relação ao gênero  possui valores similares, porém temos \textit{outliers}, mostrando que existem beneficiários com obesidade nos dois gêneros, entretanto o masculino apresentando valores do IMC mais elevados nesses \textit{outliers}. Nos Encargos, como foi mencionado anteriormente sobre possíveis \textit{outliers} devido a grande diferença entre a média e o máximo, conseguimos concluir isso agora, os dois gêneros apresentam \textit{outliers}, visualmente o gênero feminino apresenta \textit{outliers} em maiores quantidades, porém com gastos entre o primeiro e terceiro quantil em menor quantidade, em relação ao masculino.
+
+```{r fig1, echo=FALSE,fig.align='center',fig.cap="Boxplot para Idade e IMC."}
+p1<-grafboxgen(d= dados3, v = "", v1 = Idade, cores = "Set1",leg = T,
+               legx = "x", legy = "Idade")
+p2<-grafboxgen(d= dados3, v = "", v1 = IMC, cores = "Set1",leg = T,
+               legx = "x", legy = "IMC")
+cowplot::plot_grid(p1,p2,ncol = 2)
+```
+
+```{r fig2, echo=FALSE,fig.align='center',fig.cap="Boxplot para Filhos e Encargos (mil)."}
+p4<-grafboxgen(d= dados3, v = "", v1 = Encargos, cores = "Set1",leg = T,
+               legx = "x", legy = "Encargos (mil)")
+p3<-grafboxgen(d= dados3, v = "", v1 = Filhos, cores = "Set1",leg = T,
+               legx = "x", legy = "Filhos")
+cowplot::plot_grid(p3,p4,ncol = 2)
+```
+
+Para a sequência da análise, foi optado categorizar as variáveis Idade e IMC, com o intuito de facilitar algumas análises. Esta alteração será implementada somente para a parte exploratória em alguns casos, como análise primária, sendo desfeitas para a parte de modelagem. Assim, para a Idade temos os seguintes níveis (faixas etárias), 18 a 25 anos, 26 a 33 anos, 34 a 41 anos, 42 a 49 anos, 50 a 57 anos e 58 a 65 anos. E para IMC optamos por separar em 3 níveis, "abaixo", que se refere as pessoas com IMC abaixo do ideal de 18.5, "acima, referindo-se aos que apresentam IMC acima do ideal de 24.9, e "ideal" para os que apresentam IMC dentro dos Índices ideais de 18.5 a 24.9. 
+
+Com isso, na Figura \ref{fig:fig3} temos o gráfico de boxplot para o IMC (não categorizado) vs as Faixas Etárias separados por gênero, percebe-se que as faixas de 18 a 25 anos, 34 a 41 anos e 42 a 49 anos, apresentam \textit{outliers}, sendo com valores mais elevados nos pacientes de menor idade e masculinos, na faixa de 18 a 25 anos, com valores de IMC maiores que 50, sendo maior que o dobro do ideal de 24.9. Na faixa de 34 a 41 anos e do gênero masculino temos um único \textit{outliers} abaixo dos limites, com valores menores que o ideal de 18.5 para o IMC. Outro fator interessante de observar neste gráfico é na faixa de 58 a 65 anos para o gênero masculino, como visualizado ele não apresenta \textit{outliers}, porém é nítido como a média está acima dos demais, junto com seus limites máximo e mínimo. Já para o gênero feminino nesta mesma faixa isso não ocorre, apresentando limites mínimo e máximo menores comparado com o masculino da mesma faixa.
+
+Na Figura \ref{fig:fig4} é apresentado o boxplot para os Fumantes vs Encargos separados por gênero. Neste gráfico podemos notar uma grande diferença entre fumar ou não nos valores de Encargos médicos, sendo muito influente a pessoa fumar, aumentando consideravelmente os Encargos médicos. Para os indíviduos que não fumam, nota-se que existem vários \textit{outliers}, onde ocorrem gastos elevados devido a outros possíveis problemas médicos ocorridos. Para os que fumam o gênero masculino tem uma média mais elevada que para o gênero feminino, já os que não fumam apresentam-se bem similares a isso e também em relação aos \textit{outliers}.
+
+
+```{r fig3, echo=FALSE,fig.align='center',fig.cap="Box plot IMC vs Faixa etária."}
+grafboxgen(d= dados4, v = IMC, v1 = faixa_etaria, cores = "Set1",leg = T,
+           legx = "IMC" , legy = "Faixa Etária")
+```
+
+```{r fig4,echo=FALSE,fig.align='center',fig.cap="Box plot Fumante vs Encargos (mil)."}
+grafboxgen(d= dados4, v = Fumante , v1 = Encargos, cores = "Set1",leg = T,
+           legx = "Fumante" , legy = "Encargos (mil)")
+```
+
+Agora analisaremos por meio de gráficos de barras as seguintes variáveis, Faixa Etária (IDADE), Gênero, Fumante e IMC, em relação a variável resposta Encargos, buscando identificar alguma influência.
+
+Primeiramente temos a Figura \ref{fig:fig5} que apresenta o gráfico de colunas para a Faixa Etária vs Encargos. Percebe-se que conforme o aumento da idade (faixa etária) maior se torna os Encargos dos beneficiários. Principalmente acima da idade de 42 anos, na qual já apresenta média de Encargos maiores que a média geral, 13.27 mil.
+
+
+
+```{r fig5, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) por Faixa Etária."}
+grafbarmedia(d= dados4, v = faixa_etaria, v1 = Encargos, cores = "Spectral",
+             cnum = T, leg = F, legx = "Faixa Etária", legy = "Média de Encargos (Mil)")
+```
+
+As Figuras \ref{fig:fig6}, \ref{fig:fig7}, \ref{fig:fig8} e \ref{fig:regi} apresentam gráficos de colunas para as variáveis Gênero, Fumante, IMC e Regiao, respectivamente, em relação aos Encargos médios (mil). Para o gênero não é observado diferença tão grande entre masculino e feminino, os dois apresentam médias relativamente próximas, mas considerando a unidade que os valores estão, sendo em mil, temos uma diferença de quase 1.5 mil, o que se torna considerável. Assim, o gênero masculino apresenta maior gasto com Encargos. 
+
+Já para os Fumantes é onde vemos a maior diferença, é muito discrepante a diferença entre fumar ou não em relação aos gastos com Encargos médicos. 
+
+Para o IMC é observado que os Encargos médicos é bem maior em situações que caracterizam algum nível de obesidade, valor de IMC acima do ideal. Uma observação relevante sobre as pessoas com IMC abaixo do ideal presente no banco em estudo é que poucos indíviduos foram registrados com essa situação, portanto temos poucas observações, dificultando a análise. Apesar disso, vemos que apresentam valores menores com Encargos médicos. 
+
+Pelas Regiões, a região sudeste apresentou os maiores gastos com Encargos médicos. As regiões noroeste e sudoeste, regiões mais voltadas ao oeste apresentaram menores gastos médicos, já as outras duas mais localizadas ao leste, apresentaram maiores gastos.
+
+```{r fig6, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) por Gênero."}
+grafbarmedia(d= dados4, v = Genero, v1 = Encargos, cores = "Set1",cnum = T,
+             leg = F, legx = "Gênero", legy = "Média de Encargos (mil)")
+```
+
+```{r fig7, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) pelo evento de ser Fumante ou não."}
+grafbarmedia(d= dados4, v = Fumante, v1 = Encargos, cores = "Set1",cnum = T,
+             leg = F, legx = "Fumante", legy = "Média de Encargos (mil)")
+```
+
+```{r fig8, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) pela categoria do IMC."}
+
+dados4 |>
+    group_by( fIMC ) |>
+    summarise( "medy" = mean( Encargos )) |> 
+    ggplot(aes(x = fct_reorder(factor( fIMC ), medy,.desc = F), 
+              y = medy, fill = levels(factor( fIMC )))) +
+    geom_col(colour="black",show.legend = F) +
+    scale_fill_brewer(palette = "Set1", direction = 1) +
+    labs(
+      x = "IMC",
+      y = "Média de Encargos (mil)",
+      fill = "IMC" 
+    ) + 
+     theme_minimal() +
+      #Para aparecer os valores de cada coluna:
+    geom_text(aes(x = levels(factor( fIMC )), y = medy, 
+                     label = round(medy,2)),show.legend = F,vjust=1.75)
+
+```
+
+
+```{r regi, echo=FALSE,fig.align='center',fig.cap="Média de Encargos (mil) pela Região."}
+grafbarmedia(d= dados4, v = Regiao, v1 = Encargos, cores = "Set1",cnum = T,
+             leg = F, legx = "Região", legy = "Média de Encargos (mil)")
+```
+
+# Modelagem
+
+Depois de toda análise exploratória dos dados realizada anteriormente , identificamos várias possíveis influências para a variável resposta Encargos. Assim, nesta seção ajustaremos um modelo de regressão Lasso, buscando minimizar o erro do modelo, assim como, não obter overfitting. Ou seja, o objetivo é o modelo conseguir identificar as características presente nos dados, para que em outros dados ele consiga ter um desempenho similar.
+
+Para iniciar, vamos separar o banco de dados em duas partes, uma para treino e outra para teste. Essa divisão ficou aproximadamente 75% para treino, equivalente a 1003 observações, e 25% para teste, equivalente a 335 observações. Desta forma, conseguiremos trabalhar na base de treino, ajustando o modelo, e ao fim conseguir testar a eficiência do modelo ajustado sobre a base de treino. Abaixo está apresentado essa divisão, onde foi setado uma semente "set.seed(12345)" para que conseguissemos manter a mesma divisão e resultados em toda análise:
+
+```{r,include=FALSE}
+dados$Genero<-as.factor(dados$Genero)
+dados$Fumante<-as.factor(dados$Fumante)
+dados$Regiao<-as.factor(dados$Regiao)
+glimpse(dados)
+```
+
+```{r,echo=TRUE}
+# Separando as bases de treino e teste ------------------------------------
+set.seed(12345)
+base_quebra <- rsample::initial_split(dados) 
+treino <- training(base_quebra)
+teste <- testing(base_quebra)
+```
+
+Nesta etapa, iremos especificar o modelo que iremos trabalhar, definindo a regressão LASSO, que é identificada pelo valor 1 em "mixture", onde 0 corresponderia a regressão RIDGE. Logo, após é realizado a validação cruzada, que consiste na divisão que irá ser realizada na base de treino para assim fazer varias verificações em proporções diferentes da base de treino, uma por vez. Assim, para amostras de tamanho maiores que 1000, de forma mais usual é utilizado 5 ou 10 dobras, neste caso usaremos 5 dobras, o que significa que iremos quebrar em 5 partes iguais, assim sendo realizados 5 validações onde em cada vez 1/5 da base de treino será utilizada para teste. Desta forma, conseguimos minimizar o erro e não ter overfitting, já que conseguiremos de forma mais precisa, descrever o comportamento dos dados. Abaixo é mostrado essas especificações: 
+
+```{r,echo=TRUE}
+# Especificando o modelo
+modelo <- linear_reg(
+  penalty = tune(),
+  mixture = 1 # LASSO
+)|>  
+  set_engine("glmnet")|>
+  set_mode("regression")
+
+# Cross-validation
+set.seed(12345)
+bases_Cross<- vfold_cv(treino, v = 5)
+```
+
+Com o modelo selecionado e realizada a separação do modelo em 5 dobras, é realizado a tunagem do modelo, identificando qual o valor do hiperparâmetro que melhor minimiza o erro sem ocorrer overfitting. Dessa forma, especificamos, o modelo selecionado, as variáveis selecionadas para o modelo, a base de validação cruzada, o tamanho do grid, que seria a quantidade de regularização, neste caso definimos em 300. Utilizando 2 métricas, rmse (Raiz do Erro Quadrático Médio), rsq ($R^2$). Podemos analisar pelos códigos executados abaixo e pela Figura \ref{fig:tun} a tunagem do modelo, que apresentou $R^2$ aproximadamente de 74\% e rmse de 6116. 
+
+```{r, echo=TRUE}
+# Escolhendo o valor do hiperparâmetro
+set.seed(12345)
+tunagem <- tune_grid(
+  modelo,
+  Encargos ~ .,
+  bases_Cross,
+  grid=300,
+  metrics= metric_set(rmse, rsq),
+  control = control_grid(verbose = TRUE, allow_par = FALSE))
+```
+
+
+```{r tun,echo=F,fig.cap="Tunagem do modelo."}
+autoplot(tunagem)
+```
+
+Realizada a tunagem do modelo, iremos selecionar o valor do hiperparâmetro, como podemos ver anteriormente na Figura \ref{fig:tun}, conseguimos notar que independente do valor do hiperparâmetro o erro mantem-se igual, desta forma o menor valor do hiperparâmetro está apresentado na Tabela \ref{tab:tunag}. Assim, o valor do hiperparâmetro selecionado foi de $1.05e^{-10}$, o qual é um valor muito próximo de 0, e como vimos o valor do hiperparâmetro não está interferindo no valor do erro, desta forma utilizaremos o valor de 0 como penalidade no modelo.
+
+```{r,eval=FALSE,echo=TRUE}
+show_best(tunagem,"rmse", n=1)
+```
+
+\begin{table}[H]
+
+\caption{\label{tab:tunag} Resultado da tunagem com a escolha do melhor hiperparâmetro.}
+\centering
+\begin{tabu} to \linewidth {>{\centering}X>{\centering}X>{\centering}X>{\centering}X>{\centering}X>{\centering}X}
+\toprule
+penalty & .metric & .estimator & mean & n & std\_err \\
+\midrule
+$1.05e^{-10}$ & rmse & standard & 6116 & 5 & 145 \\
+\bottomrule
+\end{tabu}
+\end{table}
+
+Abaixo é apresentado a nova especificação para o modelo, onde vamos introduzir o valor de penalidade para o modelo, o hiperparâmetro definido acima. E logo após, ajustando o novo modelo para a base de treino.
+
+```{r,include=FALSE,echo=TRUE}
+# Especificando o modelo
+modelo_esp <- linear_reg(
+  penalty =  0,
+  mixture = 1 # LASSO
+)|>
+  set_engine("glmnet")|>
+  set_mode("regression")
+
+# Ajustando o modelo
+modelo_final_ajustado <- fit(modelo_esp,
+                             Encargos ~ .,
+                             data=treino)
+```
+
+Com o modelo ajustado, podemos ver na Tabela \ref{tab:import} e na Figura \ref{fig:import1} a importância das variáveis selecionadas pelo modelo em relação a variável resposta Encargos. Podemos notar que, a variável de maior influência no modelo é se o paciente é Fumante, aumentando em 23760 o valor de gasto com Encargos médicos quando fumante. Então, as covariáveis Fumante, filhos, IMC e Idade inteferem de forma positiva no modelo, ou seja, maior o valor sob a média de Encargos médicos. Já para as covariáveis, Região sudeste, sudoeste e noroeste, e também o genêro for masculino, influênciam negativamente no modelo, diminuindo o valor em gastos com Encargos médicos.
+Desta forma, o modelo final ajustado é apresentado abaixo:
+
+$$ Y =  -11718 + 23760 x_1 + 252 x_2 - 350 x_3 + 336 x_4 + 338x_5 - 128x_6 - 804x_7 -499x_8 ,$$
+onde, Y = Encargos, $x_1 =$ Fumante, $x_2$ = Idade, $x_3$ = Gênero Masculino, $x_4$ = IMC, $x_5$ = Filhos, $x_6$ = Região Noroeste, $x_7$ = Região Sudoeste, e $x_8$ = Região Sudoeste.
+
+```{r import}
+fastrep::tbl(vip::vi(modelo_final_ajustado),title = "Importância das variáveis do modelo ajustado em relação a variável resposta Encargos.")
+```
+
+
+```{r,include=FALSE}
+impor<-vip::vi(modelo_final_ajustado) |>
+  mutate(
+    abs_importance = abs(Importance),
+    Variable = fct_reorder(Variable, abs_importance)
+  )
+```
+
+```{r import1,fig.cap="Importância das variáveis do modelo ajustado em relação a variável resposta Encargos."}
+ggplot(impor) +
+  geom_col(aes(x = abs_importance, y = Variable, fill = Sign))+
+  scale_fill_brewer(palette = "Set1", direction = 1) +
+  labs(
+    x="Importância sobre Encargos",
+    y="Variáveis"
+  )+
+   theme_minimal()
+
+```
+
+
+```{r,include=FALSE}
+fastrep::tbl(broom::tidy(modelo_final_ajustado))
+###
+# USAR ESSE RESULTADO PARA MONTAR O MODELO ESCRITO.
+# Encargos = -11718 + 252 IDADE - 350 GeneroMasculino ...
+```
+
+Com o modelo ajustado e analisado, utilizamos o banco de treino para verificar a proximidade do modelo em relação ao banco de teste, fazendo uma previsão com os dados selecionados neste banco e conferindo com os reais. Desta forma, na Figura \ref{fig:predict} apresentamos essa análise, onde conseguimos notar que o modelo se saiu muito bem em relação ao banco de teste, conseguiu seguir  o comportamento dos dados, notamos apenas aqueles \textit{outliers} onde não foi aproximado, mas levando em conta que o modelo deve seguir o comportamento e não tanto as irregularidades, \textit{outliers}, o modelo se saiu bem, descrevendo com bastante proximidade a maioria dos dados e seguindo seu comportamento.
+
+```{r predict,fig.cap="Previsão do modelo ajustado em relação ao banco de teste."}
+predicao_Encargos<- predict(object = modelo_final_ajustado,new_data = teste)
+
+dados_totais<-cbind(previsao=predicao_Encargos$.pred,dados=teste$Encargos,n=1:length(teste$Encargos))
+pivot<-pivot_longer(data = as.data.frame(dados_totais),cols = previsao:dados,names_to = "linha",values_to = "valor")
+ggplot(pivot) +
+  geom_line(aes(y = valor,x=n,color=linha),size = 0.4) +
+  scale_color_manual(
+    values = c(previsao = "#ED0F00",
+    dados = "#000000")
+    )+
+  labs(
+    y="Encargos",
+    x="Número de observações",
+    color="Modelo"
+  )+
+  theme_minimal()
+# Esse gráfico é para ver se o comportamento do modelo é similar aos dados
+# Aparentemente é bem parecido.
+```
+
+# Conclusão
+
+O presente trabalho teve a finalidade de apresentar os estudos desenvolvidos na disciplina de Machine Learning através da análise de um banco de dados com algumas informações pessoais para que pudéssemos fazer a previsão de gastos com Seguro Saúde nos Estados Unidos. Para isto, iniciamos com uma análise exploratória onde podemos ter um entendimento prévio porém básico dos dados em questão bem como das relações existentes entre as váriaveis, como por exemplo a relação entre a Idade e Encargos que indicam que beneficiários com mais de 42 anos de idade já pagam valores acima da média. Além disso, fumantes representam de forma muito discrepante os maires preços dos encargos do seguro, mostrando o quanto fumar é prejudicial a saúde.
+
+Com o conhecimento prévio, adquirido na análise exploratória dos dados, partimos então para a estruturação do modelo, o qual foi ajustado através da regressão Lasso, com o objetivo de minimizar os erros de previsão sem que ocorra "overfitting" em nosso ajuste. A partir disto, podemos quantificar a influência de cada variável em relação aos encargos, sendo a variável "Fumante" a que mais interfere na média da nossa variável resposta. Por fim, foi realizado uma previsão do modelo utilizando a base de teste, para observar a proximidade com os valores reais, onde conclui-se que o modelo teve um bom comportamento.
